@@ -1,0 +1,586 @@
+LoadPackage("io");
+curtime1 := IO_gettimeofday();
+k := curtime1.tv_usec;
+while IsExistingFile(Concatenation("sim_", String(k), "_1_input")) do
+  curtime1 := IO_gettimeofday();
+  k := curtime1.tv_usec;
+od;
+
+Reset(GlobalMersenneTwister, k);;
+
+V := [];
+maxV := [];
+sumexp := [];
+sumweightedexp := [];
+
+if IsMaster() then
+  instances := 100;
+  iterations := 1;
+
+  x := Indeterminate(Rationals);
+  SetIndeterminateName(FamilyObj(x), 1, "x");
+  p := x^3-x-1;
+  G := MaximalOrderByUnitsPcpGroup(p);
+  gens := GeneratorsOfGroup(G);
+  AssignGeneratorVariables(G);
+  F := FreeGroup(Size(gens));
+  gensF := GeneratorsOfGroup(F);
+  AssignGeneratorVariables(F);
+  SetNameObject(Identity(F), "id_F");
+  id_F := Identity(F);
+  pi := GroupHomomorphismByImages(F, G, gens);
+
+  length := function(g)
+    local exp;
+    exp := GenExpList(g);
+    return Sum(List([1..Size(exp)/2], i->AbsoluteValue(exp[2*i])));
+  end;
+
+  weight := List(gens, h->Sum(List(List(gens, a->Comm(h, a)), length)));
+
+  RandomWord := function(gens, pi, L1, L2)
+  local l,w,new_w;
+  w := Random(gens)^Random([-1,1]);
+  l := Length(PreImagesRepresentative(pi, w));
+  while l < L1 or l > L2 do
+    new_w := w * Random(gens)^Random([-1,1]);
+    l := Length(PreImagesRepresentative(pi, new_w));
+    if l <= L2 then
+      w := new_w;
+    fi;
+  od;
+  return(w);
+  end;;
+
+  N := 20;
+  ell := 5;
+  L1 := 10;
+  L2 := 13;
+
+  epsilon := 20;
+
+  maxlen := 10000;
+
+  L := [];   # this line prevents
+             # warning: unbound global variable
+             # when defining D := ... below
+
+  cost3 := [];
+
+  a := [];
+  A := [];
+  B := [];
+  C := [];
+  CL := [];
+
+  number_successes := 0;
+  times := [];
+  generations := [];
+  param_changed := [];
+  param_reverted := [];
+
+  no_param_changed := 0;
+  no_param_reverted := 0;
+
+  mean_gen := 0;
+  mean_time := 0;
+  trim_mean_time := 0;
+  mean_param_changed := 0;
+  mean_param_reverted := 0;
+
+for inst in [1..instances] do
+  inputfilename := Concatenation("sim_", String(k), "_", String(inst), "_input");
+
+  A := List([1..N], j->RandomWord(gens, pi, L1, L2));
+  AF := List(A, j->PreImagesRepresentative(pi, j));
+  a := Product([1..ell], j->A[Random([1..N])]^Random([-1,1]));
+  B := List([1..N], j->RandomWord(gens, pi, L1, L2));
+  C := List(B, b->b^a);
+
+  M0 := 36;
+  M1 := 1;
+  M2 := 1;
+  M3 := 35;
+  M4 := 1;
+  M5 := 1;
+  CO := 20;
+  S := 5;
+
+  V := [M0, M1, M2, M3, M4, M5, CO, S];
+  V_default := ShallowCopy(V);
+
+  maxsteps := 2500;
+
+  sumexp := function(exp)
+    return Sum(List([1..Size(exp)/2], i->AbsoluteValue(exp[2*i])));
+  end;;
+
+  sumweightedexp := function(exp)
+    return Sum(List([1..Size(exp)/2], i->weight[i] * AbsoluteValue(exp[2*i])));
+  end;;
+
+  cost3 := function(w, pl0)
+    local av;
+    av := Sum(pl0) / N;
+    return Sum(Filtered(pl0, j->j > av));
+  end;;
+
+  cost := function(w)
+    local exp,pl0,pl0weight;
+    if w = "" then
+      exp := List([1..N], j->GenExpList(C[j]^(-1) * B[j]));
+      pl0 := List(exp, sumexp);
+      pl0weight := List(exp, sumweightedexp);
+    else
+      exp := List([1..N], j->GenExpList(C[j]^(-1) * Image(pi, w)^(-1) * B[j] * Image(pi, w)));
+      pl0 := List(exp, sumexp);
+      pl0weight := List(exp, sumweightedexp);
+    fi;
+    return [Sum(pl0), Sum(pl0weight), Maximum(pl0), cost3(w, pl0), Minimum(pl0), Length(w)];
+  end;;
+
+  PrintTo(inputfilename,
+    "if not IsMaster() then\n");
+  AppendTo(inputfilename,
+    "x := Indeterminate(Rationals);\n");
+  AppendTo(inputfilename,
+    Concatenation("p := ", String(p), ";\n"));
+  AppendTo(inputfilename,
+    "G := MaximalOrderByUnitsPcpGroup(p);\n");
+  AppendTo(inputfilename,
+    "gens := GeneratorsOfGroup(G);\n");
+  AppendTo(inputfilename,
+    "AssignGeneratorVariables(G);\n");
+  AppendTo(inputfilename,
+    "F := FreeGroup(Size(gens));\n");
+  AppendTo(inputfilename,
+    "gensF := GeneratorsOfGroup(F);\n");
+  AppendTo(inputfilename,
+    "AssignGeneratorVariables(F);\n");
+  AppendTo(inputfilename,
+    "SetNameObject(Identity(F), \"id_F\");\n");
+  AppendTo(inputfilename,
+    "id_F := Identity(F);\n");
+  AppendTo(inputfilename,
+    "pi := GroupHomomorphismByImages(F, G, gens);\n");
+  AppendTo(inputfilename,
+    "length := function(g)\n");
+  AppendTo(inputfilename,
+    "  local exp;\n");
+  AppendTo(inputfilename,
+    "  exp := GenExpList(g);\n");
+  AppendTo(inputfilename,
+    "  return Sum(List([1..Size(exp)/2], i->AbsoluteValue(exp[2*i])));\n");
+  AppendTo(inputfilename,
+    "end;\n");
+  AppendTo(inputfilename,
+    "weight := List(gens, h->Sum(List(List(gens, a->Comm(h, a)), length)));\n");
+  AppendTo(inputfilename,
+    Concatenation("A := ", String(A), ";\n"));
+  AppendTo(inputfilename,
+    Concatenation("a := ", String(a), ";\n"));
+  AppendTo(inputfilename,
+    Concatenation("B := ", String(B), ";\n"));
+  AppendTo(inputfilename,
+    Concatenation("C := ", String(C), ";\n"));
+  AppendTo(inputfilename,
+    Concatenation("M0 := ", String(M0), ";\n"));
+  AppendTo(inputfilename,
+    Concatenation("M1 := ", String(M1), ";\n"));
+  AppendTo(inputfilename,
+    Concatenation("M2 := ", String(M2), ";\n"));
+  AppendTo(inputfilename,
+    Concatenation("M3 := ", String(M3), ";\n"));
+  AppendTo(inputfilename,
+    Concatenation("M4 := ", String(M4), ";\n"));
+  AppendTo(inputfilename,
+    Concatenation("M5 := ", String(M5), ";\n"));
+  AppendTo(inputfilename,
+    Concatenation("CO := ", String(CO), ";\n"));
+  AppendTo(inputfilename,
+    Concatenation("S := ", String(S), ";\n"));
+  AppendTo(inputfilename,
+    Concatenation("N := ", String(N), ";\n"));
+  AppendTo(inputfilename,
+    Concatenation("L1 := ", String(L1), ";\n"));
+  AppendTo(inputfilename,
+    Concatenation("L2 := ", String(L2), ";\n"));
+  AppendTo(inputfilename,
+    Concatenation("maxsteps := ", String(maxsteps), ";\n"));
+
+
+  AppendTo(inputfilename,
+    "sumexp := function(exp)\n");
+  AppendTo(inputfilename,
+    "  return Sum(List([1..Size(exp)/2], i->AbsoluteValue(exp[2*i])));\n");
+  AppendTo(inputfilename,
+    "end;;\n");
+
+  AppendTo(inputfilename,
+    "sumweightedexp := function(exp)\n");
+  AppendTo(inputfilename,
+    "  return Sum(List([1..Size(exp)/2], i->weight[i] * AbsoluteValue(exp[2*i])));\n");
+  AppendTo(inputfilename,
+    "end;;\n");
+
+  AppendTo(inputfilename,
+    "cost3 := function(w, pl0)\n");
+  AppendTo(inputfilename,
+    "  local av;\n");
+  AppendTo(inputfilename,
+    "  av := Sum(pl0) / N;\n");
+  AppendTo(inputfilename,
+    "  return Sum(Filtered(pl0, j->j > av));\n");
+  AppendTo(inputfilename,
+    "end;;\n");
+
+  AppendTo(inputfilename,
+    "cost := function(w)\n");
+  AppendTo(inputfilename,
+    "  local exp,pl0,pl0weight;\n");
+  AppendTo(inputfilename,
+    "  if w = \"\" then\n");
+  AppendTo(inputfilename,
+    "    exp := List([1..N], j->GenExpList(C[j]^(-1) * B[j]));\n");
+  AppendTo(inputfilename,
+    "    pl0 := List(exp, sumexp);\n");
+  AppendTo(inputfilename,
+    "    pl0weight := List(exp, sumweightedexp);\n");
+  AppendTo(inputfilename,
+    "  else\n");
+  AppendTo(inputfilename,
+    "    exp := List([1..N], j->GenExpList(C[j]^(-1) * Image(pi, w)^(-1) * B[j] * Image(pi, w)));\n");
+  AppendTo(inputfilename,
+    "    pl0 := List(exp, sumexp);\n");
+  AppendTo(inputfilename,
+    "    pl0weight := List(exp, sumweightedexp);\n");
+  AppendTo(inputfilename,
+    "  fi;\n");
+  AppendTo(inputfilename,
+    "  return [Sum(pl0), Sum(pl0weight), Maximum(pl0), cost3(w, pl0), Minimum(pl0), Length(w)];\n");
+  AppendTo(inputfilename,
+    "end;;\n");
+
+  AppendTo(inputfilename,
+    "fi;\n");
+
+  ParRead(inputfilename);
+
+
+  Print("done\n");
+
+  m := 20;
+  mincost := 0;
+  size := M0+M1+M2+M3+M4+M5+CO+S;
+
+
+statistics_filename := Concatenation("sim_", String(k), "_", String(inst), "_stat");
+PrintTo(statistics_filename, "trial\titeration\tsol_length\ttime\ttime_diff\tparam_changes\tparam_reversion\n");
+
+for tr in [1..iterations] do
+  LR1 := [Runtime()];
+  for p0 in [1..TOPCnumSlaves] do
+    SendMsg("Runtime()", p0);
+    Add(LR1, RecvMsg(p0));
+  od;
+
+  maxcost := -1;  # will be replaced in the first round
+
+  local_minimum := 0;
+  last_CL1 := -1;
+  repeat_CL1 := 0;
+
+  no_param_changed := 0;
+  no_param_reverted := 0;
+
+  Print(tr);
+  Print("\n");
+
+  outputfilename := Concatenation("sim_", String(k), "_", String(inst), "_", String(tr), "_output");
+  PrintTo(outputfilename, "\n");
+  statfilename := Concatenation("sim_", String(k), "_", String(inst), "_", String(tr), "_stat");
+  PrintTo(statfilename, "gen\tmincost\tmaxcost\tavcost\tbestlen\tavlen\n");
+
+  nextL := List([1..size], i->PseudoRandom(F: radius:=1));;
+  n := 1;
+
+  while n <= maxsteps do
+    L := nextL;
+    CL := ParList(List(nextL,
+      function(i) if IsOne(i) then return(""); else return(i); fi; end), cost);
+    SortParallel(CL, L);
+
+    AppendTo(outputfilename, n);
+    AppendTo(outputfilename, ":  ");
+    AppendTo(outputfilename, L[1]);
+    AppendTo(outputfilename, "\n");
+ 
+    AppendTo(statfilename, n);
+    AppendTo(statfilename, "\t");
+
+    AppendTo(outputfilename, CL);
+    AppendTo(outputfilename, "\n");
+
+    AppendTo(statfilename, Minimum(CL));
+    AppendTo(statfilename, "\t");
+    AppendTo(statfilename, Maximum(CL));
+    AppendTo(statfilename, "\t");
+    AppendTo(statfilename, Float(Sum(CL)/size));
+    AppendTo(statfilename, "\t");
+
+    len := List(L, Length);
+    AppendTo(outputfilename, len);
+    AppendTo(outputfilename, "\n");
+    AppendTo(outputfilename, "\n");
+  
+    AppendTo(statfilename, len[1]);
+    AppendTo(statfilename, "\t");
+    AppendTo(statfilename, Float(Sum(len)/size));
+    AppendTo(statfilename, "\t\n");
+
+    if n = 1 then
+      maxcost := 10 * Minimum(CL)[1];
+      AppendTo(statfilename, "set maxcost to ");
+      AppendTo(statfilename, maxcost);
+      AppendTo(statfilename, "\n");
+    fi;
+
+    if CL[1][1] <= mincost then
+      number_successes := number_successes + 1;
+      break;
+    fi;
+
+    if CL[1] = last_CL1 then
+      repeat_CL1 := repeat_CL1 + 1;
+      if repeat_CL1 >= epsilon then
+        local_minimum := CL[1];
+
+        maxV := Maximum(V);
+        ij := [Random(Positions(V, maxV)), Random(Filtered([1..7], r->V[r] <> maxV))];
+        delta := Random([V[ij[2]]..maxV-1]);
+
+        AppendTo(statfilename, "changed parameters from ");
+        AppendTo(statfilename, V);
+        V[ij[1]] := V[ij[1]] - delta;
+        V[ij[2]] := V[ij[2]] + delta;
+        AppendTo(statfilename, " to ");
+        AppendTo(statfilename, V);
+        AppendTo(statfilename, "\n");
+        repeat_CL1 := 0;
+        no_param_changed := no_param_changed + 1;
+      fi;
+    else
+      if local_minimum <> 0 then
+        local_minimum := 0;
+        V := ShallowCopy(V_default);
+        AppendTo(statfilename, "reverted parameters to ");
+        AppendTo(statfilename, V);
+        AppendTo(statfilename, "\n");
+        no_param_reverted := no_param_reverted + 1;
+      fi;
+      last_CL1 := CL[1];
+      repeat_CL1 := 1;
+    fi;
+
+    for j in [1..size] do
+      if CL[j][1] > maxcost then
+        L[j] := PseudoRandom(F: radius:=1);
+        Print("\nreplaced word at position ");
+        Print(j);
+        Print(" because cost > maxcost\n");
+      elif CL[j][6] > maxlen then
+        L[j] := PseudoRandom(F: radius:=1);
+        Print("\nreplaced word at position ");
+        Print(j);
+        Print(" because length > maxlen\n");
+      fi;
+    od;
+
+    nextL := [];
+
+    for i in [1..V[1]] do
+      w := L[Random([1..m])];
+      l := Length(w);
+      if l > 0 then
+        r := Random([0..l]);
+        if Random([1,2]) = 1 then
+          Append(nextL, [Subword(w, 1, r) * Random(AF) * Subword(w, r+1, l)]);
+        else
+          Append(nextL, [Subword(w, 1, r) * Random(AF)^(-1) * Subword(w, r+1, l)]);
+        fi;
+      else
+        if Random([1,2]) = 1 then
+          Append(nextL, [Random(AF)]);
+        else
+          Append(nextL, [Random(AF)^(-1)]);
+        fi;
+      fi;
+    od;
+    for i in [1..V[2]] do
+      w := L[Random([1..m])];
+      l := Length(w);
+      if l > 0 then
+        r := Random([0..l]);
+        if Random([1,2]) = 1 then
+          Append(nextL, [Subword(w, 1, r) * Random(gensF) * Subword(w, r+1, l)]);
+        else
+          Append(nextL, [Subword(w, 1, r) * Random(gensF)^(-1) * Subword(w, r+1, l)]);
+        fi;
+      else
+        if Random([1,2]) = 1 then
+          Append(nextL, [Random(gensF)]);
+        else
+          Append(nextL, [Random(gensF)^(-1)]);
+        fi;
+      fi;
+    od;
+    for i in [1..V[3]] do
+      w := L[Random([1..m])];
+      l := Length(w);
+      if l > 0 then
+        r := Random([1..l]);
+        Append(nextL, [Subword(w, 1, r-1) * Subword(w, r+1, l)]);
+      else
+        Append(nextL, [w]);
+      fi;
+    od;
+    for i in [1..V[4]] do
+      w := L[Random([1..m])];
+      l := Length(w);
+      if l > 0 then
+        r := Random([1..l]);
+        aa := Random(gensF)^Random([-1,1]);
+        Append(nextL, [Subword(w, 1, r-1) * aa * Subword(w, r+1, l)]);
+      else
+        Append(nextL, [w]);
+      fi;
+    od;
+    for i in [1..V[5]] do
+      w := L[Random([1..m])];
+      l := Length(w);
+      if l > 0 then
+        r := Random([1..l]);
+        aa := Random(gensF)^Random([-1,1]);
+        Append(nextL, [Subword(w, 1, r-1) * aa * Subword(w, r, r) * aa^(-1) * Subword(w, r+1, l)]);
+      else
+        Append(nextL, [w]);
+      fi;
+    od;
+    for i in [1..V[6]] do
+      w := L[Random([1..m])];
+      l := Length(w);
+      if l > 0 then
+        r := Random([1..l]);
+        s := r + Random([0..l-r]);
+        aa := Random(gensF)^Random([-1,1]);
+        Append(nextL, [Subword(w, 1, r-1) * aa * Subword(w, r, s) * aa^(-1) * Subword(w, s+1, l)]);
+      else
+        Append(nextL, [w]);
+      fi;
+    od;
+    for i in [1..V[7]] do
+      w1 := L[Random([1..m])];
+      w2 := L[Random([1..m])];
+      l1 := Length(w1);
+      l2 := Length(w2);
+      if l1 > 1 and l2 > 1 then
+        r1 := Random([1..l1]);
+        r2 := Random([1..l2]);
+        if Random([1,2]) = 1 then
+          Append(nextL, [Subword(w1, 1, r1) * Subword(w2, r2+1, l2)]);
+        else
+          Append(nextL, [Subword(w2, 1, r2) * Subword(w1, r1+1, l1)]);
+        fi;
+      else
+        Append(nextL, [w1]);
+      fi;
+    od;
+
+    Append(nextL, [L[1]]);
+    for i in [1..(V[8]-1)] do
+      Append(nextL, [L[Random([1..m])]]);
+    od;
+    n := n+1;
+  od;
+
+  AppendTo(outputfilename,
+    Concatenation("n = ", String(n), "\n"));
+  AppendTo(outputfilename,
+    L);
+  AppendTo(outputfilename,
+    "\n");
+
+  LR2 := [Runtime()];
+  for p0 in [1..TOPCnumSlaves] do
+    SendMsg("Runtime()", p0);
+    Add(LR2, RecvMsg(p0));
+  od;
+  LRD := List([1..Size(LR1)], v->LR2[v] - LR1[v]);
+  difference_sec := Float(Maximum(LRD{[2..Size(LRD)]}) / 1000);
+
+  Add(times, difference_sec);
+  Add(generations, n);
+  Add(param_changed, no_param_changed);
+  Add(param_reverted, no_param_reverted);
+
+  AppendTo(outputfilename,
+    Concatenation("Length of a: ", String(Length(PreImagesRepresentative(pi, a))), "\n"));
+  AppendTo(outputfilename,
+    Concatenation("Length of best word: ", String(Length(PreImagesRepresentative(pi, Image(pi, L[1])))), "\n"));
+  AppendTo(outputfilename,
+    Concatenation("Time taken: ", String(difference_sec), "\n"));
+
+  AppendTo(statistics_filename,
+    Concatenation(String(tr), " ", String(n), " ", String(Length(L[1])), " ",
+      String(difference_sec), " ", String(LRD), " ",
+      String(no_param_changed), " ", String(no_param_reverted), "\n"));
+od;   # end for tr in [1..iterations] do
+
+experiments := inst * iterations;
+summary_filename := Concatenation("sim_", String(k), "_sumstat");
+PrintTo(summary_filename,
+  Concatenation("total number of instances\t", String(inst), "\n"));
+AppendTo(summary_filename,
+  Concatenation("total number of successes\t", String(number_successes), "\n"));
+AppendTo(summary_filename,
+  Concatenation("total number of experiments\t", String(experiments), "\n"));
+AppendTo(summary_filename,
+  Concatenation("percentage of successes\t", String(Float(number_successes / experiments * 100)), "\n"));
+mean_gen := Sum(generations)/experiments;
+AppendTo(summary_filename,
+  Concatenation("average number of generations\t", String(Float(mean_gen)), "\n"));
+if experiments > 1 then
+   stddev_gen := Sqrt(Float(Sum([1..experiments], j->(mean_gen-generations[j])^2) / (experiments-1)));
+   AppendTo(summary_filename,  Concatenation("standard deviation of the numbers of generations\t",    String(stddev_gen), "\n"));
+fi;
+tri := Int(Floor(Float(experiments * 0.1)));
+Sort(generations);
+trim_mean_gen := Float(Sum(generations{[(tri+1)..(experiments-tri)]})/(experiments-2*tri));
+AppendTo(summary_filename,
+  Concatenation("20% trimmed mean of the number of generations\t", String(trim_mean_gen), "\n"));
+AppendTo(summary_filename,
+  Concatenation("total time\t", String(Sum(times)), "\n"));
+mean_time := Sum(times)/experiments;
+AppendTo(summary_filename,
+  Concatenation("average time\t", String(Float(mean_time)), "\n"));
+if experiments > 1 then
+   stddev_times := Sqrt(Float(Sum([1..experiments], j->(mean_time-times[j])^2) / (experiments-1)));
+   AppendTo(summary_filename,  Concatenation("standard deviation of the times\t",    String(stddev_times), "\n"));
+fi;
+Sort(times);
+trim_mean_time := Float(Sum(times{[(tri+1)..(experiments-tri)]})/(experiments-2*tri));
+AppendTo(summary_filename,
+  Concatenation("20% trimmed mean of the times\t", String(trim_mean_time), "\n"));
+mean_param_changed := Sum(param_changed)/experiments;
+AppendTo(summary_filename,
+  Concatenation("average number of parameter changes\t", String(Float(mean_param_changed)), "\n"));
+mean_param_reverted := Sum(param_reverted)/experiments;
+AppendTo(summary_filename,
+  Concatenation("average number of parameter reversions\t", String(Float(mean_param_reverted)), "\n"));
+
+od;   # for inst in [1..instances] do
+
+fi;
+
+QUIT;
+
